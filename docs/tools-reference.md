@@ -63,7 +63,7 @@ Configure an analog channel. Only specified parameters are changed — omitted p
 
 ### `configure_acquisition`
 
-Control the acquisition state and configure timebase/trigger settings. All parameters are optional — combine as needed in a single call.
+Control the acquisition state and configure timebase, trigger, memory depth and acquisition mode. All parameters are optional — combine as needed in a single call.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -74,12 +74,15 @@ Control the acquisition state and configure timebase/trigger settings. All param
 | `trigger_level` | string | No | Trigger level voltage (e.g. `1.5V`, `500mV`) |
 | `trigger_slope` | enum | No | `POS` (rising), `NEG` (falling), `WINDOW` |
 | `trigger_delay` | string | No | Horizontal position (e.g. `0S`, `-4.8US`) |
+| `memory_depth` | string | No | Maximum memory depth (`MSIZ`): `14K`, `140K`, `1.4M`, `14M` (or `7K`…`7M` with one channel per ADC). Deeper means a longer record at a higher sample rate, but a slower download |
+| `acquire_mode` | enum | No | `SAMPLING` (normal), `PEAK_DETECT`, `AVERAGE`, `HIGH_RES` |
+| `average_count` | number | No | Averages for `AVERAGE` mode: 4, 16, 32, 64, 128, 256, … |
 
 ### `get_acquisition_status`
 
 Query the current acquisition state. No parameters.
 
-Returns: acquisition status, sample rate, timebase, trigger delay, trigger mode, trigger select, trigger level, and trigger slope.
+Returns: acquisition status, sample rate, memory depth, acquisition mode, timebase, trigger delay, trigger mode, trigger select, trigger level, and trigger slope.
 
 ---
 
@@ -156,6 +159,100 @@ Returns a JSON object with:
 ### `screenshot`
 
 Capture the oscilloscope screen as a PNG image. Returns a base64-encoded image that Claude can display inline. No parameters.
+
+---
+
+## Capture
+
+### `capture`
+
+Arm a single-shot acquisition, wait for the trigger, and download one or more channels from that same acquisition, so they're time-aligned. Returns per-channel statistics rather than raw points, which keeps responses small. Leaves the scope stopped on the captured record.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `channels` | array of `C1`–`C4` | Yes | — | Channels to download, e.g. `["C1","C2"]` |
+| `arm` | boolean | No | `true` | Arm a new single acquisition and wait for it. `false` reads the record already in memory |
+| `timeout_s` | number | No | `5` | How long to wait for a trigger. On timeout the scope is stopped and an error returned |
+| `save_csv` | string | No | — | Write `time_s` plus one column per channel, at full resolution, to this file |
+
+Returns `sample_rate`, `points`, `time_start_s`/`time_end_s` (relative to the trigger), and for each channel `min`, `max`, `pkpk`, `mean` and `rms`. When `save_csv` is set, `csv` holds the absolute path written.
+
+Triggering is detected from `INR?` bit 0 (new acquisition), or `SAST?` returning to `Stop` after being armed.
+
+---
+
+## CAN Bus
+
+These tools analyse CAN traffic from the analog waveform on a channel probing CAN_H, CAN_L, or the differential signal. The SDS1000X-E's own decoder can't return frames over SCPI. Set the timebase so a capture holds several frames (1–2 ms/div is a good start) with at least ~10 samples per bit.
+
+### `detect_can_baud`
+
+Measure the bus bit rate from edge timing and match it to a standard rate (10k, 20k, 33.333k, 50k, 62.5k, 83.333k, 100k, 125k, 250k, 500k, 800k, 1M; matched within ±2%).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `channel` | `C1` \| `C2` \| `C3` \| `C4` | Yes | Channel probing the bus |
+| `arm` | boolean | No | Arm a fresh single acquisition first (default: analyse the record in memory) |
+| `apply_to_decoder` | `B1` \| `B2` | No | Configure this scope decode bus (already set to CAN) for the channel at the detected rate and turn decode on |
+
+Returns `measured_baud`, `standard_baud` and `error_from_standard_pct`, plus:
+- `confidence` (`high`/`medium`/`low`), `residual_bits_rms`, `samples_per_bit`, `frames_seen`
+- signal levels, and `probable_signal` (CAN_H/differential if the bus idles low, CAN_L if it idles high)
+- `warnings` (e.g. too few samples per bit or too few frames)
+
+### `can_decode`
+
+Decode classic CAN 2.0A/B frames (11- and 29-bit IDs, remote frames, CRC check) from one capture.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `channel` | `C1` \| `C2` \| `C3` \| `C4` | Yes | — | Channel probing the bus |
+| `baud` | number | No | measured | Known bit rate (5000–1000000) |
+| `arm` | boolean | No | `false` | Arm a fresh single acquisition first |
+| `max_frames` | number | No | `50` | Frames to list; the counts cover all of them |
+
+Returns the bit rate used, frame and error counts, a count per ID, and a list of frames: `t_ms` (relative to the trigger), `id`, `dlc` and `data`. Frames also carry `rtr`, `acked: false` or `error` where they apply. Error kinds are `stuff`, `form`, `crc`, `fd` (CAN FD, not decoded) and `truncated` (cut off at the record boundary).
+
+### `can_monitor_start`
+
+Start a background monitoring session. The server repeatedly arms a single shot, waits for a start-of-frame, downloads the record, measures the bit rate, decodes frames, and accumulates per-ID statistics. Only one session runs at a time.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `channel` | `C1` \| `C2` \| `C3` \| `C4` | Yes | — | Channel probing the bus |
+| `signal` | `CAN_H` \| `CAN_L` \| `DIFF` | No | `CAN_H` | What the probe measures; sets the trigger slope (rising/falling/rising) and level (3.0 V / 2.0 V / 0.9 V) |
+| `baud` | number | No | measured | Known bit rate; otherwise the median of per-capture estimates is used |
+| `duration_s` | number | No | — | Stop automatically after this long |
+| `max_captures` | number | No | — | Stop automatically after this many captures |
+| `trigger_timeout_s` | number | No | `2` | How long each capture waits for traffic before re-arming |
+| `trigger_level` | string | No | per `signal` | Trigger level override, e.g. `3.2V` |
+| `configure_trigger` | boolean | No | `true` | Set an edge trigger on the channel, with the trigger one division from the left so most of the record follows it. Previous settings are restored on stop. `false` keeps your trigger |
+| `log_csv` | string | No | — | Append every decoded frame to this CSV (`capture,time_s,id_hex,extended,rtr,dlc,data_hex,crc_ok,acked,error`) |
+
+### `can_monitor_status`
+
+Return the current summary of a session.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `session` | string | No | active/latest | Session id (e.g. `can-1`) |
+| `recent_frames` | number | No | `0` | Also return the last N decoded frames (max 200) |
+
+The summary contains:
+- **Session progress:** `state`, `captures`, `trigger_timeouts`, `live_time_fraction` (share of elapsed time actually captured)
+- **`baud`:** measured, matched standard, and percent error
+- **`frames`:** decoded OK, errors by kind, unacknowledged, and cut at a capture edge
+- **`ids` table:** one row per ID with `count`, `dlc`, latest `data`, `changing` (`X` marks bytes that have changed since first seen) and `period_ms`, the median interval between frames of that ID within the same capture
+
+### `can_monitor_stop`
+
+Stop a session, restore the trigger settings, and return the final summary.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `session` | string | No | active/latest | Session id |
+
+> Monitoring samples the bus rather than logging it losslessly: traffic is missed while each record downloads and is analysed. Counts are therefore partial, but periods are accurate because they're measured within a capture.
 
 ---
 

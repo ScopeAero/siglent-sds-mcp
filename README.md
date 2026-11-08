@@ -16,7 +16,9 @@ This MCP server communicates with Siglent SDS oscilloscopes via SCPI commands ov
 
 **Key features:**
 
-- 12 tools covering channels, timebase, triggers, measurements, waveform capture, and screenshots
+- 19 tools covering channels, timebase, triggers, measurements, waveform capture, CAN bus analysis, and screenshots
+- Arm-and-wait single-shot capture of one or more channels from the same trigger, summarised server-side (full-resolution CSV on request)
+- CAN bus bit-rate detection and frame decoding from the analog waveform, plus background monitoring sessions that return per-ID statistics instead of raw data
 - Auto-connect on startup via environment variable
 - Query queue serializes commands automatically — tools can safely run in parallel
 - Waveform data returned as voltage/time arrays ready for analysis
@@ -38,6 +40,8 @@ The server uses standard SCPI commands from the [SDS1000X-E Programming Guide](h
 You need a Siglent oscilloscope accessible on your network (TCP port 5025). Pick one of the three options below and add the config to your `.mcp.json` (in your project directory, or `~/.claude/.mcp.json` for global access).
 
 Replace `192.168.1.126` with your scope's IP address.
+
+> **Note:** This is the [ScopeAero fork](https://github.com/ScopeAero/siglent-sds-mcp). The published Docker image and npm package in options A and B come from the [upstream project](https://github.com/MagnusJohansson/siglent-sds-mcp) and don't include this fork's additions (capture, CAN tools). Use **Option C**, or build the Docker image locally (see [Development](#docker-local-build)).
 
 ### Option A: Docker (recommended)
 
@@ -81,7 +85,7 @@ Requires Node.js 20+. Downloads and runs the package automatically.
 ### Option C: Clone and build
 
 ```bash
-git clone https://github.com/magnusjohansson/siglent-sds-mcp.git
+git clone https://github.com/ScopeAero/siglent-sds-mcp.git
 cd siglent-sds-mcp
 npm install
 npm run build
@@ -306,7 +310,7 @@ ChatGPT Desktop only supports remote HTTPS MCP servers (called "connectors"), no
 
 ## Tools
 
-12 tools across 6 categories. See [docs/tools-reference.md](docs/tools-reference.md) for full parameter details.
+19 tools across 8 categories. See [docs/tools-reference.md](docs/tools-reference.md) for full parameter details.
 
 | Category | Tool | Description |
 |----------|------|-------------|
@@ -315,12 +319,18 @@ ChatGPT Desktop only supports remote HTTPS MCP servers (called "connectors"), no
 | | `identify` | Query device ID (manufacturer, model, serial, firmware) |
 | Channel | `get_channel` | Read channel configuration (vdiv, offset, coupling, etc.) |
 | | `configure_channel` | Set vdiv, offset, coupling, bandwidth limit, trace, probe |
-| Acquisition | `get_acquisition_status` | Read timebase, sample rate, trigger settings |
-| | `configure_acquisition` | Set timebase, trigger, run/stop/single |
+| Acquisition | `get_acquisition_status` | Read timebase, sample rate, memory depth, acquisition mode, trigger settings |
+| | `configure_acquisition` | Set timebase, trigger, memory depth, acquisition mode, run/stop/single |
 | Measurement | `measure` | Read a measurement (frequency, Vpp, RMS, etc.) |
 | | `measure_statistics` | Enable/read/reset measurement statistics |
 | Waveform | `get_waveform` | Download voltage/time data arrays |
 | | `screenshot` | Capture scope screen as PNG |
+| Capture | `capture` | Arm a single shot, wait for the trigger, summarise one or more channels (optional CSV) |
+| CAN | `detect_can_baud` | Measure the bus bit rate and match it to a standard rate |
+| | `can_decode` | Decode CAN 2.0A/B frames from one capture |
+| | `can_monitor_start` | Start a background capture-and-decode session |
+| | `can_monitor_status` | Per-ID summary (count, period, data, changing bytes) of the session |
+| | `can_monitor_stop` | Stop the session, restore the trigger, return the final summary |
 | SCPI | `scpi_query` / `scpi_command` | Send arbitrary SCPI commands |
 
 ## Example Conversations
@@ -349,11 +359,33 @@ ChatGPT Desktop only supports remote HTTPS MCP servers (called "connectors"), no
 >
 > Claude calls `screenshot`, receives a base64 BMP image, and displays it inline.
 
+### Capture two channels from the same trigger
+
+> **You:** Grab a single shot of C1 and C2 and save it so I can look at it in Python.
+>
+> Claude calls `capture` with `channels: ["C1","C2"]` and `save_csv: "capture.csv"`, gets back min/max/mean/RMS per channel, and the full-resolution data lands in the CSV.
+
+### Identify an unknown CAN bus
+
+> **You:** There's a CAN bus on C2 (CAN_H). What's the bit rate, and what's on it?
+>
+> Claude calls `can_monitor_start` with `channel: "C2"`, waits, then calls `can_monitor_status`. The server has measured the bit rate (e.g. 500 kbit/s, +0.03%) and decoded the traffic into a table of IDs with counts, periods, latest data and which bytes change. `can_monitor_stop` ends the session and restores the trigger settings.
+
 ### Configure the scope for a specific measurement
 
 > **You:** Set up channel 1 for a 3.3V logic signal — DC coupling, 1V/div, trigger on the rising edge at 1.6V.
 >
 > Claude calls `configure_channel` (setting vdiv, coupling) and `configure_acquisition` (setting trigger source, level, slope) in sequence.
+
+## CAN Bus Analysis
+
+The SDS1000X-E's protocol decoder can't return decoded frames over SCPI, so the CAN tools work from the raw analog waveform instead. Probe CAN_H, CAN_L, or the differential signal on any analog channel.
+
+- **Bit-rate detection** times every edge, then fits a bit time to the intervals between edges of the *same* polarity. Those intervals are always a whole number of bits and cancel the skew from CAN's slow passive dominant→recessive edge. The result is the actual rate (e.g. 126.25 kbit/s for a node running 1% fast), matched to the nearest standard rate within ±2% (10k, 20k, 33.333k, 50k, 62.5k, 83.333k, 100k, 125k, 250k, 500k, 800k, 1M).
+- **Decoding** handles 11-bit and 29-bit IDs, remote frames, bit destuffing and CRC-15 checking, and reports stuff, form and CRC errors. CAN FD frames are detected but not decoded.
+- **Monitoring sessions** run inside the server: arm → wait for a start-of-frame → download → measure → decode → accumulate, repeated until stopped. The AI only sees the summary. The session sets an edge trigger on the channel (rising for CAN_H/differential, falling for CAN_L) and restores the previous trigger settings when it stops.
+
+**Setup tips:** choose a timebase that fits several frames in one capture (1–2 ms/div is a good start) with at least ~10 samples per bit (10 MSa/s for 1 Mbit/s). Monitoring samples the bus rather than logging it losslessly — traffic is missed while each capture downloads. `live_time_fraction` in the summary reports how much bus time was observed, and message periods are measured only between frames inside the same capture, so they're accurate even though counts are partial.
 
 ## Architecture
 
@@ -413,8 +445,15 @@ src/
     channel.ts          # get_channel, configure_channel
     acquisition.ts      # configure_acquisition, get_acquisition_status
     measure.ts          # measure, measure_statistics
-    waveform.ts         # get_waveform, screenshot
+    waveform.ts         # get_waveform, screenshot, captureWaveform helper
+    capture.ts          # capture (arm-and-wait, multi-channel)
+    can.ts              # detect_can_baud, can_decode, can_monitor_*
     scpi.ts             # scpi_query, scpi_command
+  acquire.ts            # armAndWait: single-shot arm and trigger wait
+  can-monitor.ts        # Background CAN monitoring session
+  analysis/
+    can-baud.ts         # Edge extraction, bit-rate estimation, standard-rate matching
+    can-decode.ts       # CAN 2.0A/B frame decoder
 ```
 
 ## Troubleshooting
