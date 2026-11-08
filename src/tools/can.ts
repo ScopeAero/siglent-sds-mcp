@@ -202,7 +202,10 @@ export function registerCanTools(server: McpServer): void {
         .boolean()
         .optional()
         .describe("Set up the edge trigger automatically (default true); false keeps your trigger settings"),
-      log_csv: z.string().optional().describe("Append every decoded frame to this CSV file"),
+      log_csv: z
+        .string()
+        .optional()
+        .describe("Write every decoded frame to this new .csv file (never overwrites an existing file)"),
     },
     { readOnlyHint: false },
     async (args) => {

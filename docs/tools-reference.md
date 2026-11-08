@@ -173,7 +173,7 @@ Arm a single-shot acquisition, wait for the trigger, and download one or more ch
 | `channels` | array of `C1`–`C4` | Yes | — | Channels to download, e.g. `["C1","C2"]` |
 | `arm` | boolean | No | `true` | Arm a new single acquisition and wait for it. `false` reads the record already in memory |
 | `timeout_s` | number | No | `5` | How long to wait for a trigger. On timeout the scope is stopped and an error returned |
-| `save_csv` | string | No | — | Write `time_s` plus one column per channel, at full resolution, to this file |
+| `save_csv` | string | No | — | Write `time_s` plus one column per channel, at full resolution, to this new `.csv` file. Existing files are never overwritten |
 
 Returns `sample_rate`, `points`, `time_start_s`/`time_end_s` (relative to the trigger), and for each channel `min`, `max`, `pkpk`, `mean` and `rms`. When `save_csv` is set, `csv` holds the absolute path written.
 
@@ -227,7 +227,7 @@ Start a background monitoring session. The server repeatedly arms a single shot,
 | `trigger_timeout_s` | number | No | `2` | How long each capture waits for traffic before re-arming |
 | `trigger_level` | string | No | per `signal` | Trigger level override, e.g. `3.2V` |
 | `configure_trigger` | boolean | No | `true` | Set an edge trigger on the channel, with the trigger one division from the left so most of the record follows it. Previous settings are restored on stop. `false` keeps your trigger |
-| `log_csv` | string | No | — | Append every decoded frame to this CSV (`capture,time_s,id_hex,extended,rtr,dlc,data_hex,crc_ok,acked,error`) |
+| `log_csv` | string | No | — | Write every decoded frame to this new `.csv` file (`capture,time_s,id_hex,extended,rtr,dlc,data_hex,crc_ok,acked,error`). Existing files are never overwritten |
 
 ### `can_monitor_status`
 

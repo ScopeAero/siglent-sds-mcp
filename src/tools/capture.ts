@@ -1,8 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { createWriteStream } from "node:fs";
-import { resolve } from "node:path";
 import { once } from "node:events";
+import { createCsvFile } from "../output-file.js";
 import { armAndWait } from "../acquire.js";
 import { captureWaveform, type CapturedWaveform } from "./waveform.js";
 
@@ -34,7 +33,7 @@ export function registerCaptureTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Write time plus one column per channel at full resolution to this file path"
+          "Write time plus one column per channel at full resolution to this new .csv file (never overwrites an existing file)"
         ),
     },
     { readOnlyHint: false },
@@ -70,9 +69,7 @@ export function registerCaptureTools(server: McpServer): void {
         };
 
         if (save_csv) {
-          const path = resolve(save_csv);
-          await writeCsv(path, channels, waves);
-          result.csv = path;
+          result.csv = await writeCsv(save_csv, channels, waves);
         }
 
         return {
@@ -119,11 +116,12 @@ export function summarize(v: Float32Array) {
 }
 
 async function writeCsv(
-  path: string,
+  requestedPath: string,
   channels: string[],
   waves: CapturedWaveform[]
-): Promise<void> {
-  const out = createWriteStream(path);
+): Promise<string> {
+  const { path, handle } = await createCsvFile(requestedPath);
+  const out = handle.createWriteStream();
   const failed = once(out, "error").then(([e]) => {
     throw e;
   });
@@ -146,5 +144,6 @@ async function writeCsv(
     if (!out.write(block)) await Promise.race([once(out, "drain"), failed]);
   }
   out.end();
-  await Promise.race([once(out, "finish"), failed]);
+  await Promise.race([once(out, "close"), failed]);
+  return path;
 }

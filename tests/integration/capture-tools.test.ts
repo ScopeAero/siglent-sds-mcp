@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestServer, callTool, getText } from "../helpers.js";
@@ -86,6 +86,26 @@ describe("capture", () => {
     expect(lines[0]).toBe("time_s,C1_V,C2_V");
     expect(lines).toHaveLength(4);
     expect(lines[2].split(",").slice(1).map(Number)).toEqual([1, 2]);
+  });
+
+  it("never overwrites an existing file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "capture-"));
+    const path = join(dir, "keep.csv");
+    await writeFile(path, "precious\n");
+    const result = await callTool(client, "capture", { channels: ["C1"], save_csv: path });
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toMatch(/already exists/);
+    expect(await readFile(path, "utf8")).toBe("precious\n");
+  });
+
+  it("refuses output files without a .csv extension", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "capture-"));
+    const result = await callTool(client, "capture", {
+      channels: ["C1"],
+      save_csv: join(dir, ".zshrc"),
+    });
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toMatch(/\.csv extension/);
   });
 
   it("reports no trigger and stops the scope on timeout", async () => {

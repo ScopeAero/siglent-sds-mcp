@@ -10,8 +10,8 @@
  * periods are measured only between frames inside the same capture.
  */
 
-import { appendFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import type { FileHandle } from "node:fs/promises";
+import { createCsvFile } from "./output-file.js";
 import { connection } from "./connection.js";
 import { armAndWait } from "./acquire.js";
 import { captureWaveform } from "./tools/waveform.js";
@@ -44,7 +44,7 @@ export interface MonitorOptions {
   configureTrigger?: boolean;
   /** Trigger level override, e.g. "3.0V" */
   triggerLevel?: string;
-  /** Append every decoded frame to this CSV file */
+  /** Write every decoded frame to this new CSV file */
   logPath?: string;
 }
 
@@ -97,9 +97,11 @@ export async function startSession(
     );
   }
   const s = new CanMonitorSession(`can-${nextId++}`, opts);
+  // Register only once started, so a failed start (bad log path, scope
+  // error) doesn't leave a phantom "running" session blocking the next one
+  await s.start();
   sessions.set(s.id, s);
   active = s;
-  await s.start();
   return s;
 }
 
@@ -124,21 +126,29 @@ export class CanMonitorSession {
   private loop: Promise<void> = Promise.resolve();
   private saved: Array<string> = [];
   private logPath?: string;
+  /** Kept open for the session so writes can't be redirected via the path */
+  private logHandle?: FileHandle;
 
   constructor(
     readonly id: string,
     readonly opts: MonitorOptions
-  ) {
-    if (opts.logPath) this.logPath = resolve(opts.logPath);
-  }
+  ) {}
 
   async start(): Promise<void> {
-    if (this.opts.configureTrigger !== false) await this.configureTrigger();
-    if (this.logPath) {
-      await appendFile(
-        this.logPath,
+    // Create the log before touching the trigger, so a bad path fails cleanly
+    if (this.opts.logPath) {
+      const { path, handle } = await createCsvFile(this.opts.logPath);
+      this.logPath = path;
+      this.logHandle = handle;
+    }
+    try {
+      await this.logHandle?.write(
         "capture,time_s,id_hex,extended,rtr,dlc,data_hex,crc_ok,acked,error\n"
       );
+      if (this.opts.configureTrigger !== false) await this.configureTrigger();
+    } catch (err) {
+      await this.logHandle?.close().catch(() => {});
+      throw err;
     }
     this.loop = this.run();
   }
@@ -178,6 +188,8 @@ export class CanMonitorSession {
       this.stoppedAt = Date.now();
       if (active === this) active = null;
       await this.restoreTrigger().catch(() => {});
+      await this.logHandle?.close().catch(() => {});
+      this.logHandle = undefined;
     }
   }
 
@@ -224,13 +236,13 @@ export class CanMonitorSession {
       if (f.error) this.errorCounts[f.error] = (this.errorCounts[f.error] ?? 0) + 1;
       this.recent.push({ ...f, time: t, capture });
       if (this.recent.length > MAX_RECENT) this.recent.shift();
-      if (this.logPath) log += csvRow(capture, t, f);
+      if (this.logHandle) log += csvRow(capture, t, f);
       if (f.error) continue;
       this.framesOk++;
       if (!f.acked) this.unacked++;
       this.addToIdStats(f, t);
     }
-    if (log && this.logPath) await appendFile(this.logPath, log);
+    if (log && this.logHandle) await this.logHandle.write(log);
   }
 
   private addToIdStats(f: CanFrame, t: number): void {

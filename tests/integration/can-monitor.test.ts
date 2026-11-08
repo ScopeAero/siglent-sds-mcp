@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestServer, callTool, getText } from "../helpers.js";
@@ -183,6 +183,19 @@ describe("CAN monitor session", () => {
       mockConnection.sendCommand.mockImplementation(sendImpl);
       mockConnection.query.mockImplementation(queryImpl);
     }
+  });
+
+  it("refuses an existing log file without touching the scope or blocking later sessions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "can-mon-"));
+    const log = join(dir, "existing.csv");
+    await writeFile(log, "keep\n");
+    const result = await callTool(client, "can_monitor_start", { channel: "C2", log_csv: log });
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toMatch(/already exists/);
+    expect(await readFile(log, "utf8")).toBe("keep\n");
+    expect(scope.sent).toEqual([]); // trigger untouched
+    const summary = await runToCompletion({ channel: "C2", max_captures: 1 });
+    expect(summary.captures).toBe(1);
   });
 
   it("refuses a second session while one is running", async () => {
