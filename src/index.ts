@@ -8,6 +8,8 @@ import { registerAcquisitionTools } from "./tools/acquisition.js";
 import { registerMeasureTools } from "./tools/measure.js";
 import { registerWaveformTools } from "./tools/waveform.js";
 import { registerScpiTools } from "./tools/scpi.js";
+import { registerCanTools } from "./tools/can.js";
+import { registerCaptureTools } from "./tools/capture.js";
 import { connection } from "./connection.js";
 
 // Prevent uncaught errors from killing the MCP server process
@@ -30,6 +32,8 @@ registerAcquisitionTools(server);
 registerMeasureTools(server);
 registerWaveformTools(server);
 registerScpiTools(server);
+registerCanTools(server);
+registerCaptureTools(server);
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();

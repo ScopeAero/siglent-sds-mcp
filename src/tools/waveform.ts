@@ -25,63 +25,12 @@ export function registerWaveformTools(server: McpServer): void {
       const maxPts = max_points || 1000;
 
       try {
-        await connection.checkChannel(channel);
-        // Query channel parameters for voltage reconstruction
-        const [vdivStr, ofstStr, tdivStr, saraStr, trdlStr] = await Promise.all([
-          connection.query(`${channel}:VDIV?`),
-          connection.query(`${channel}:OFST?`),
-          connection.query("TDIV?"),
-          connection.query("SARA?"),
-          connection.query("TRDL?"),
-        ]);
-
-        const vdiv = parseFloat(vdivStr);
-        const ofst = parseFloat(ofstStr);
-        const tdiv = parseFloat(tdivStr);
-        const sara = parseSampleRate(saraStr);
-        const trdl = parseFloat(trdlStr);
-
-        if (
-          isNaN(vdiv) ||
-          isNaN(ofst) ||
-          isNaN(tdiv) ||
-          isNaN(sara) ||
-          isNaN(trdl)
-        ) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Error parsing scope parameters: vdiv=${vdivStr}, ofst=${ofstStr}, tdiv=${tdivStr}, sara=${saraStr}, trdl=${trdlStr}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-
-        // Configure waveform transfer - get all points
-        await connection.sendCommand("WFSU SP,0,NP,0,FP,0");
-
-        // Request waveform data (binary block response)
-        const rawData = await connection.queryBinary(`${channel}:WF? DAT2`);
-
-        // Convert raw bytes to voltage values
-        const voltages: number[] = [];
-        for (let i = 0; i < rawData.length; i++) {
-          let codeValue = rawData[i];
-          if (codeValue > 127) {
-            codeValue = codeValue - 255;
-          }
-          voltages.push(codeValue * (vdiv / 25) - ofst);
-        }
+        const { voltages, sampleRate: sara, startTime, vdiv, ofst, tdiv } =
+          await captureWaveform(channel);
 
         // Generate time values
         const totalPoints = voltages.length;
         const timeInterval = 1 / sara;
-        // Time 0 is the trigger point. The programming guide's formula
-        // -(tdiv * 14 / 2) assumes zero delay; a delay of TRDL (negative =
-        // trigger shown left of centre) shifts the whole record by -TRDL.
-        const startTime = -(tdiv * 14) / 2 - trdl;
 
         // Downsample if needed
         let step = 1;
@@ -215,6 +164,67 @@ export function registerWaveformTools(server: McpServer): void {
       }
     }
   );
+}
+
+export interface CapturedWaveform {
+  /** Full-resolution samples in volts */
+  voltages: Float32Array;
+  sampleRate: number;
+  /** Time of the first sample relative to the trigger, seconds */
+  startTime: number;
+  vdiv: number;
+  ofst: number;
+  tdiv: number;
+}
+
+/** Download a channel's whole acquisition memory as volts */
+export async function captureWaveform(
+  channel: string
+): Promise<CapturedWaveform> {
+  await connection.checkChannel(channel);
+  // Query channel parameters for voltage reconstruction
+  const [vdivStr, ofstStr, tdivStr, saraStr, trdlStr] = await Promise.all([
+    connection.query(`${channel}:VDIV?`),
+    connection.query(`${channel}:OFST?`),
+    connection.query("TDIV?"),
+    connection.query("SARA?"),
+    connection.query("TRDL?"),
+  ]);
+
+  const vdiv = parseFloat(vdivStr);
+  const ofst = parseFloat(ofstStr);
+  const tdiv = parseFloat(tdivStr);
+  const sampleRate = parseSampleRate(saraStr);
+  const trdl = parseFloat(trdlStr);
+
+  if ([vdiv, ofst, tdiv, sampleRate, trdl].some(isNaN)) {
+    throw new Error(
+      `Error parsing scope parameters: vdiv=${vdivStr}, ofst=${ofstStr}, tdiv=${tdivStr}, sara=${saraStr}, trdl=${trdlStr}`
+    );
+  }
+
+  // Configure waveform transfer - get all points
+  await connection.sendCommand("WFSU SP,0,NP,0,FP,0");
+
+  // Request waveform data (binary block response)
+  const rawData = await connection.queryBinary(`${channel}:WF? DAT2`);
+
+  // Convert raw bytes to voltage values
+  const voltages = new Float32Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) {
+    let codeValue = rawData[i];
+    if (codeValue > 127) {
+      codeValue = codeValue - 255;
+    }
+    voltages[i] = codeValue * (vdiv / 25) - ofst;
+  }
+
+  // Time 0 is the trigger point. The programming guide's formula
+  // -(tdiv * 14 / 2) assumes zero delay; a delay of TRDL (negative =
+  // trigger shown left of centre) shifts the whole record by -TRDL.
+  const startTime = -(tdiv * 14) / 2 - trdl;
+
+  return { voltages, sampleRate, startTime, vdiv, ofst, tdiv };
 }
 
 export function countTrailingZeros(n: number): number {

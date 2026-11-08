@@ -11,6 +11,8 @@ const { mockConnection, defaultQuery } = vi.hoisted(() => {
       "TRDL?": "0.00E+00",
       "TRMD?": "AUTO",
       "TRSE?": "EDGE,SR,C1,HT,OFF",
+      "MSIZ?": "14M",
+      "ACQW?": "SAMPLING",
       "C1:TRLV?": "1.50E-01",
       "C1:TRSL?": "POS",
     };
@@ -61,6 +63,8 @@ describe("get_acquisition_status", () => {
     expect(parsed).toEqual({
       acquisition_status: "Trig'd",
       sample_rate: "1.00E+09",
+      memory_depth: "14M",
+      acquire_mode: "SAMPLING",
       timebase: "1.00E-06",
       trigger_delay: "0.00E+00",
       trigger_mode: "AUTO",
@@ -106,6 +110,16 @@ describe("configure_acquisition", () => {
     const text = getText(result);
     expect(text).toContain("STOP");
     expect(mockConnection.sendCommand).toHaveBeenCalledWith("STOP");
+  });
+
+  it("sets memory depth and acquisition mode", async () => {
+    await callTool(client, "configure_acquisition", {
+      memory_depth: "1.4M",
+      acquire_mode: "AVERAGE",
+      average_count: 16,
+    });
+    expect(mockConnection.sendCommand).toHaveBeenCalledWith("MSIZ 1.4M");
+    expect(mockConnection.sendCommand).toHaveBeenCalledWith("ACQW AVERAGE,16");
   });
 
   it("builds correct trigger commands", async () => {

@@ -7,6 +7,8 @@ import { registerAcquisitionTools } from "../src/tools/acquisition.js";
 import { registerMeasureTools } from "../src/tools/measure.js";
 import { registerWaveformTools } from "../src/tools/waveform.js";
 import { registerScpiTools } from "../src/tools/scpi.js";
+import { registerCanTools } from "../src/tools/can.js";
+import { registerCaptureTools } from "../src/tools/capture.js";
 
 export async function createTestServer() {
   const server = new McpServer({
@@ -20,6 +22,8 @@ export async function createTestServer() {
   registerMeasureTools(server);
   registerWaveformTools(server);
   registerScpiTools(server);
+  registerCanTools(server);
+  registerCaptureTools(server);
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 

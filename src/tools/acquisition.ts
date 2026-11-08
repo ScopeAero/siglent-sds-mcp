@@ -5,7 +5,7 @@ import { connection } from "../connection.js";
 export function registerAcquisitionTools(server: McpServer): void {
   server.tool(
     "configure_acquisition",
-    "Control acquisition state and configure timebase/trigger settings. Use 'command' to run/stop the scope, and optionally set timebase and trigger parameters in the same call.",
+    "Control acquisition state and configure timebase, trigger, memory depth and acquisition mode. Use 'command' to run/stop the scope, and optionally set timebase and trigger parameters in the same call.",
     {
       command: z
         .enum(["run", "stop", "single", "auto"])
@@ -45,6 +45,23 @@ export function registerAcquisitionTools(server: McpServer): void {
         .describe(
           "Trigger delay / horizontal position with unit (e.g. '0S', '-4.8US', '100NS')"
         ),
+      memory_depth: z
+        .string()
+        .optional()
+        .describe(
+          "Maximum memory depth (MSIZ), e.g. '14K', '140K', '1.4M', '14M' (or 7K…7M when one channel per ADC). Deeper = longer capture at a higher sample rate, but slower to download"
+        ),
+      acquire_mode: z
+        .enum(["SAMPLING", "PEAK_DETECT", "AVERAGE", "HIGH_RES"])
+        .optional()
+        .describe(
+          "Acquisition mode: SAMPLING (normal), PEAK_DETECT (catch narrow glitches), AVERAGE (reduce noise on repetitive signals), HIGH_RES (boxcar smoothing)"
+        ),
+      average_count: z
+        .number()
+        .int()
+        .optional()
+        .describe("Averages for AVERAGE mode: 4, 16, 32, 64, 128, 256, ..."),
     },
     { readOnlyHint: false },
     async ({
@@ -55,9 +72,26 @@ export function registerAcquisitionTools(server: McpServer): void {
       trigger_level,
       trigger_slope,
       trigger_delay,
+      memory_depth,
+      acquire_mode,
+      average_count,
     }) => {
       try {
         const commandsSent: string[] = [];
+
+        if (memory_depth !== undefined) {
+          await connection.sendCommand(`MSIZ ${memory_depth}`);
+          commandsSent.push(`MSIZ ${memory_depth}`);
+        }
+
+        if (acquire_mode !== undefined) {
+          const cmd =
+            acquire_mode === "AVERAGE" && average_count !== undefined
+              ? `ACQW AVERAGE,${average_count}`
+              : `ACQW ${acquire_mode}`;
+          await connection.sendCommand(cmd);
+          commandsSent.push(cmd);
+        }
 
         if (timebase !== undefined) {
           await connection.sendCommand(`TDIV ${timebase}`);
@@ -154,18 +188,20 @@ export function registerAcquisitionTools(server: McpServer): void {
 
   server.tool(
     "get_acquisition_status",
-    "Get the current acquisition state including sample rate, memory depth, timebase, trigger configuration, and acquisition status.",
+    "Get the current acquisition state including sample rate, memory depth, acquisition mode, timebase, trigger configuration, and acquisition status.",
     {},
     { readOnlyHint: true },
     async () => {
       try {
-        const [sast, sara, tdiv, trdl, trmd, trse] = await Promise.all([
+        const [sast, sara, tdiv, trdl, trmd, trse, msiz, acqw] = await Promise.all([
           connection.query("SAST?"),
           connection.query("SARA?"),
           connection.query("TDIV?"),
           connection.query("TRDL?"),
           connection.query("TRMD?"),
           connection.query("TRSE?"),
+          connection.query("MSIZ?"),
+          connection.query("ACQW?"),
         ]);
 
         // Query level/slope of the active trigger source
@@ -184,6 +220,8 @@ export function registerAcquisitionTools(server: McpServer): void {
         const result = {
           acquisition_status: sast,
           sample_rate: sara,
+          memory_depth: msiz,
+          acquire_mode: acqw,
           timebase: tdiv,
           trigger_delay: trdl,
           trigger_mode: trmd,
